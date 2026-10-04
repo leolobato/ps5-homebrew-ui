@@ -1,0 +1,11 @@
+# Glyphs for names an app receives from a store or a catalogue, for
+# tools/font-baker: bake_font <ttf> <out> 56 8 2048 @tools/font-baker/store-names.glyphs
+# Items as in bake_font.cpp; a face that lacks a glyph skips it.
+european
+U+2000-206F    # General Punctuation: dashes, quotes, daggers, per mille, prime
+U+20A0-20BF    # currency signs
+U+2100-214F    # Letterlike Symbols: trade mark, numero, sound recording
+U+2150-218F    # Number Forms: fractions, Roman numerals
+U+2605-2606    # black and white stars
+U+2661 U+2665  # hearts
+U+266A-266B    # notes

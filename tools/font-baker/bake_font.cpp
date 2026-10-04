@@ -2,10 +2,19 @@
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// usage: bake_font <font.ttf> <out.huifont> [pixel_size=56] [sdf_range=8] [atlas=1024]
-//                  [glyphs=basic|european]
-// Bakes printable ASCII plus a few UI symbols into a single-channel signed
-// distance field atlas with metrics and kerning (see src/gfx/font_format.hpp).
+// usage: bake_font <font.ttf|.ttc> <out.huifont> [pixel_size=56] [sdf_range=8] [atlas=1024]
+//                  [glyphs=basic] [face index=0]
+// Bakes printable ASCII plus a few UI symbols, and whatever the glyph list
+// adds, into a single-channel signed distance field atlas with metrics and
+// kerning (see src/gfx/font_format.hpp).
+//
+// The glyph list is items separated by commas:
+//   basic                 nothing more (the default)
+//   european              accented Latin, Greek, Cyrillic, quotes, euro, trade mark
+//   U+2122, U+2000-206F   one code point or a range (hexadecimal)
+//   text=<file>           every character of a UTF-8 text file
+//   @<file>               more items, one or more per line; '#' starts a comment
+//   all                   every character the font maps (CJK: tens of thousands)
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../../third_party/stb/stb_truetype.h"
@@ -16,8 +25,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <fstream>
 #include <iterator>
+#include <set>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace
@@ -43,41 +56,133 @@ struct Baked
 // U+0386 to U+03CE, U+0410 to U+044F, Io), curly quotation marks, the euro
 // and the trade mark sign: about 450 more glyphs, which need a 2048 atlas at
 // 56 pixels. A face without Greek (Montserrat) simply skips those letters.
-std::vector<int> codepoints(bool european)
+void add_european(std::set<int> &result)
 {
-    std::vector<int> result;
-    for (int c = 32; c < 127; ++c)
-        result.push_back(c);
-    if (european)
+    for (int c = 0x00A1; c <= 0x017F; ++c)
+        result.insert(c);
+    // Greek with its tonos accents and dialytika; three code points in
+    // the range are not assigned.
+    for (int c = 0x0386; c <= 0x03CE; ++c)
     {
-        for (int c = 0x00A1; c <= 0x017F; ++c)
-            result.push_back(c);
-        // Greek with its tonos accents and dialytika; three code points in
-        // the range are not assigned.
-        for (int c = 0x0386; c <= 0x03CE; ++c)
-        {
-            if (c != 0x0387 && c != 0x038B && c != 0x038D && c != 0x03A2)
-                result.push_back(c);
-        }
-        for (int c = 0x0410; c <= 0x044F; ++c)
-            result.push_back(c);
-        const int more[] = {0x0401, 0x0451, 0x2018, 0x2019, 0x201C, 0x201D, 0x201E, 0x20AC, 0x2122};
-        result.insert(result.end(), std::begin(more), std::end(more));
+        if (c != 0x0387 && c != 0x038B && c != 0x038D && c != 0x03A2)
+            result.insert(c);
     }
+    for (int c = 0x0410; c <= 0x044F; ++c)
+        result.insert(c);
+    for (const int c : {0x0401, 0x0451, 0x2018, 0x2019, 0x201C, 0x201D, 0x201E, 0x20AC, 0x2122})
+        result.insert(c);
+}
+
+// Decodes UTF-8 leniently: a malformed byte is skipped.
+void add_text(std::set<int> &result, const std::string &text)
+{
+    for (std::size_t i = 0; i < text.size();)
+    {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        const int length = lead < 0x80 ? 1 : lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 0;
+        if (length == 0 || i + static_cast<std::size_t>(length) > text.size())
+        {
+            ++i;
+            continue;
+        }
+        int value = length == 1 ? lead : lead & (0x7f >> length);
+        for (int k = 1; k < length; ++k)
+            value = (value << 6) | (static_cast<unsigned char>(text[i + static_cast<std::size_t>(k)]) & 0x3f);
+        if (value >= 32)
+            result.insert(value);
+        i += static_cast<std::size_t>(length);
+    }
+}
+
+std::string read_all(const std::string &path)
+{
+    std::ifstream input(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+}
+
+int parse_hex(const std::string &value)
+{
+    std::string digits = value;
+    if (digits.rfind("U+", 0) == 0 || digits.rfind("u+", 0) == 0)
+        digits = digits.substr(2);
+    return static_cast<int>(std::strtol(digits.c_str(), nullptr, 16));
+}
+
+bool add_items(std::set<int> &result, const std::string &list, const stbtt_fontinfo &font, int depth)
+{
+    std::string item;
+    std::stringstream items(list);
+    while (std::getline(items, item, ','))
+    {
+        item.erase(0, item.find_first_not_of(" \t\r\n"));
+        item.erase(item.find_last_not_of(" \t\r\n") + 1);
+        if (item.empty() || item == "basic")
+            continue;
+        if (item == "european")
+        {
+            add_european(result);
+        }
+        else if (item == "all")
+        {
+            // stb_truetype cannot walk a cmap, so every plane in use is probed.
+            for (int c = 0x20; c <= 0x3FFFF; ++c)
+            {
+                if (stbtt_FindGlyphIndex(&font, c) != 0)
+                    result.insert(c);
+            }
+        }
+        else if (item.rfind("text=", 0) == 0)
+        {
+            add_text(result, read_all(item.substr(5)));
+        }
+        else if (item[0] == '@' && depth < 4)
+        {
+            std::string lines;
+            std::stringstream file(read_all(item.substr(1)));
+            for (std::string line; std::getline(file, line);)
+            {
+                line = line.substr(0, line.find('#'));
+                for (char &c : line)
+                {
+                    if (c == ' ' || c == '\t')
+                        c = ',';
+                }
+                lines += line + ",";
+            }
+            if (!add_items(result, lines, font, depth + 1))
+                return false;
+        }
+        else if (item[0] == 'U' || item[0] == 'u')
+        {
+            const std::size_t dash = item.find('-');
+            const int first = parse_hex(item.substr(0, dash));
+            const int last = dash == std::string::npos ? first : parse_hex(item.substr(dash + 1));
+            for (int c = first; c <= last && c <= 0x10FFFF; ++c)
+                result.insert(c);
+        }
+        else
+        {
+            std::fprintf(stderr, "unknown glyph item '%s'\n", item.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<int> codepoints(const std::set<int> &more)
+{
+    std::set<int> result(more);
+    for (int c = 32; c < 127; ++c)
+        result.insert(c);
     // Middle dot, multiplication sign, copyright, degree, en/em dash, bullet,
     // ellipsis, arrows, check mark, and (in fonts that have them) a full
     // block, a black circle and four pointing triangles. Glyphs a font lacks
     // are skipped; test with Font::has_glyph before relying on one.
-    const int extra[] = {0x00B7, 0x00D7, 0x00A9, 0x00B0, 0x2013, 0x2014, 0x2022, 0x2026,
-                         0x2190, 0x2191, 0x2192, 0x2193, 0x2713, 0x2588, 0x25CF, 0x25B2,
-                         0x25B6, 0x25BC, 0x25C0};
-    for (const int c : extra)
-    {
-        // The european set already has the Latin-1 ones.
-        if (std::find(result.begin(), result.end(), c) == result.end())
-            result.push_back(c);
-    }
-    return result;
+    for (const int c : {0x00B7, 0x00D7, 0x00A9, 0x00B0, 0x2013, 0x2014, 0x2022, 0x2026, 0x2190,
+                        0x2191, 0x2192, 0x2193, 0x2713, 0x2588, 0x25CF, 0x25B2, 0x25B6, 0x25BC,
+                        0x25C0})
+        result.insert(c);
+    return std::vector<int>(result.begin(), result.end());
 }
 
 template <typename T> void put(std::vector<unsigned char> &out, const T &value)
@@ -92,30 +197,44 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        std::fprintf(stderr, "usage: %s font.ttf out.huifont [pixel_size] [sdf_range] [atlas] [basic|european]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s font.ttf out.huifont [pixel_size] [sdf_range] [atlas] [glyphs] [face]\n", argv[0]);
         return 2;
     }
     const float pixel_size = argc > 3 ? std::strtof(argv[3], nullptr) : 56.0f;
     const int range = argc > 4 ? std::atoi(argv[4]) : 8;
     const int atlas_size = argc > 5 ? std::atoi(argv[5]) : 1024;
-    const bool european = argc > 6 && std::strcmp(argv[6], "european") == 0;
+    // A font collection (.ttc) holds several faces; Noto Sans CJK's first is Japanese.
+    const int face = argc > 7 ? std::atoi(argv[7]) : 0;
+    if (atlas_size < 64 || atlas_size > 16384)
+    {
+        std::fprintf(stderr, "atlas %d: use 64 to 16384 (the header and GL both limit it)\n", atlas_size);
+        return 2;
+    }
 
     std::ifstream input(argv[1], std::ios::binary);
     std::vector<unsigned char> ttf((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     stbtt_fontinfo font;
-    if (ttf.empty() || !stbtt_InitFont(&font, ttf.data(), stbtt_GetFontOffsetForIndex(ttf.data(), 0)))
+    const int offset = ttf.empty() ? -1 : stbtt_GetFontOffsetForIndex(ttf.data(), face);
+    if (offset < 0 || !stbtt_InitFont(&font, ttf.data(), offset))
     {
         std::fprintf(stderr, "cannot read font %s\n", argv[1]);
         return 1;
     }
     const float scale = stbtt_ScaleForMappingEmToPixels(&font, pixel_size);
+    std::set<int> more;
+    if (argc > 6 && !add_items(more, argv[6], font, 0))
+        return 2;
 
     std::vector<Baked> glyphs;
-    for (int codepoint : codepoints(european))
+    int skipped = 0;
+    const auto started = std::chrono::steady_clock::now();
+    for (int codepoint : codepoints(more))
     {
         if (codepoint != ' ' && stbtt_FindGlyphIndex(&font, codepoint) == 0)
         {
-            std::fprintf(stderr, "skipping U+%04X (not in font)\n", codepoint);
+            // A range names unassigned and missing code points by the thousand.
+            if (++skipped <= 20)
+                std::fprintf(stderr, "skipping U+%04X (not in font)\n", codepoint);
             continue;
         }
         Baked glyph;
@@ -129,6 +248,11 @@ int main(int argc, char **argv)
                                              &glyph.xoff, &glyph.yoff);
         glyphs.push_back(glyph);
     }
+
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (skipped > 20)
+        std::fprintf(stderr, "skipped %d code points in all\n", skipped);
 
     // Shelf packing, tallest first, one pixel of spacing.
     std::vector<Baked *> order;
@@ -167,12 +291,23 @@ int main(int argc, char **argv)
                         glyph.bitmap + row * glyph.w, static_cast<std::size_t>(glyph.w));
     }
 
+    // Every pair is asked, so the cost grows with the square of the glyph
+    // count. Ideographs, kana and Hangul sit on a fixed em grid and are not
+    // kerned, so pairs from U+2E80 up are left out: a CJK bake would
+    // otherwise ask about a billion pairs.
     std::vector<ff::Kern> kerns;
-    for (const Baked &a : glyphs)
+    std::vector<int> indices;
+    for (const Baked &glyph : glyphs)
+        indices.push_back(glyph.codepoint < 0x2E80 ? stbtt_FindGlyphIndex(&font, glyph.codepoint) : 0);
+    for (std::size_t i = 0; i < glyphs.size(); ++i)
     {
-        for (const Baked &b : glyphs)
+        const Baked &a = glyphs[i];
+        for (std::size_t j = 0; j < glyphs.size() && indices[i] != 0; ++j)
         {
-            const int kern = stbtt_GetCodepointKernAdvance(&font, a.codepoint, b.codepoint);
+            const Baked &b = glyphs[j];
+            if (indices[j] == 0)
+                continue;
+            const int kern = stbtt_GetGlyphKernAdvance(&font, indices[i], indices[j]);
             if (kern != 0)
                 kerns.push_back(ff::Kern{static_cast<std::uint32_t>(a.codepoint),
                                          static_cast<std::uint32_t>(b.codepoint),
@@ -229,7 +364,8 @@ int main(int argc, char **argv)
     std::fclose(file);
     for (Baked &glyph : glyphs)
         stbtt_FreeSDF(glyph.bitmap, nullptr);
-    std::printf("%s: %zu glyphs, %zu kerning pairs, atlas %dx%d, %zu bytes\n", argv[2], glyphs.size(),
-                kerns.size(), atlas_size, atlas_height, out.size());
+    std::printf("%s: %zu glyphs, %zu kerning pairs, atlas %dx%d, %zu bytes, %.0f us per glyph\n",
+                argv[2], glyphs.size(), kerns.size(), atlas_size, atlas_height, out.size(),
+                glyphs.empty() ? 0.0 : seconds * 1e6 / static_cast<double>(glyphs.size()));
     return 0;
 }
