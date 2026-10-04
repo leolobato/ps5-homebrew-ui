@@ -115,9 +115,11 @@ fields: any size is sharp, and one atlas per face is all the memory they use.
 The atlases sit on texture units of their own (up to `gfx::kFontSlots`, six), so text never interrupts
 a run of shapes: a screen full of mixed text and shapes is one draw call.
 The glyph set is printable ASCII plus `· × © ° – — • … ← ↑ → ↓ ✓` (and, in
-DejaVu Sans Mono, `█ ● ▲ ▶ ▼ ◀`); a face that lacks a symbol simply skips it,
-and curly quotes are not baked at all. Check `font->has_glyph(codepoint)` before
-relying on a symbol; draw icons from shapes instead of hunting for glyphs.
+DejaVu Sans Mono, `█ ● ▲ ▶ ▼ ◀`), and what `tools/font-baker/store-names.glyphs`
+adds: accented Latin, Greek, Cyrillic, curly quotes, `® ™ €`, Roman numerals
+and the rest of General Punctuation and Letterlike Symbols. A face that lacks
+a symbol simply skips it. Check `font->has_glyph(codepoint)` before relying on
+a symbol; draw icons from shapes instead of hunting for glyphs.
 
 Text you did not write (names, messages, answers) needs more than that.
 `tools/font-baker` bakes a `european` set (accented Latin, Greek, Cyrillic) into
@@ -259,7 +261,7 @@ Stated plainly, so you do not look for it:
 - **No rounded clipping.** Clips are rectangles; rounded images use the
   `radius` argument instead.
 - **No text shaping.** Left-to-right text in the baked glyph set only: a
-  character outside it draws as nothing. For other scripts see how
+  character outside it draws as `?`. For other scripts see how
   ProsperoEden shapes text with HarfBuzz and system fonts, and what
   ProsperoRadio needed to adopt it ([ADOPTING.md](ADOPTING.md)).
 - **No image decoder.** Upload RGBA pixels; decode files with a library of
