@@ -51,6 +51,89 @@ struct Baked
     int y = 0;
 };
 
+// stb's analytic SDF handles quadratic TrueType outlines, but silently ignores
+// CFF cubic curves in both its winding and distance calculations. Use the same
+// cubic-capable flattening routine as stb's normal rasterizer for CFF outlines,
+// then measure signed distances to the resulting closed contours. This stays an
+// offline operation; the atlas format, metrics and runtime shader are unchanged.
+unsigned char *cff_sdf(const stbtt_fontinfo &font, float scale, int codepoint,
+                       int padding, int *width, int *height, int *xoff, int *yoff)
+{
+    const int glyph = stbtt_FindGlyphIndex(&font, codepoint);
+    int x0, y0, x1, y1;
+    stbtt_GetGlyphBitmapBox(&font, glyph, scale, scale, &x0, &y0, &x1, &y1);
+    if (x0 == x1 || y0 == y1)
+        return nullptr; // Space keeps its advance and has no quad.
+    x0 -= padding;
+    y0 -= padding;
+    x1 += padding;
+    y1 += padding;
+    *width = x1 - x0;
+    *height = y1 - y0;
+    *xoff = x0;
+    *yoff = y0;
+
+    stbtt_vertex *vertices = nullptr;
+    const int vertex_count = stbtt_GetGlyphShape(&font, glyph, &vertices);
+    int *lengths = nullptr;
+    int contour_count = 0;
+    // A 0.05 atlas-pixel tolerance keeps approximation below SDF quantization
+    // for the default eight-pixel range, including small curved counters.
+    stbtt__point *points = stbtt_FlattenCurves(vertices, vertex_count, 0.05f / scale,
+                                              &lengths, &contour_count, font.userdata);
+    stbtt_FreeShape(&font, vertices);
+    auto *result = static_cast<unsigned char *>(STBTT_malloc(*width * *height, font.userdata));
+    if (points == nullptr || result == nullptr)
+    {
+        std::fprintf(stderr, "cannot bake CFF glyph U+%04X\n", codepoint);
+        std::exit(1);
+    }
+    int point_count = 0;
+    for (int contour = 0; contour < contour_count; ++contour)
+        point_count += lengths[contour];
+    for (int i = 0; i < point_count; ++i)
+    {
+        points[i].x *= scale;
+        points[i].y *= -scale; // Font outlines are y-up; the atlas is y-down.
+    }
+    for (int y = 0; y < *height; ++y)
+        for (int x = 0; x < *width; ++x)
+        {
+            const float sx = x0 + x + 0.5f;
+            const float sy = y0 + y + 0.5f;
+            float distance2 = static_cast<float>(padding * padding);
+            int winding = 0;
+            int start = 0;
+            for (int contour = 0; contour < contour_count; ++contour)
+            {
+                const int count = lengths[contour];
+                for (int i = 0, j = count - 1; i < count; j = i++)
+                {
+                    const auto &a = points[start + j];
+                    const auto &b = points[start + i];
+                    const float dx = b.x - a.x, dy = b.y - a.y;
+                    const float length2 = dx * dx + dy * dy;
+                    if (length2 == 0.0f)
+                        continue;
+                    const float t = std::clamp(((sx - a.x) * dx + (sy - a.y) * dy) / length2,
+                                               0.0f, 1.0f);
+                    const float ex = a.x + t * dx - sx, ey = a.y + t * dy - sy;
+                    distance2 = std::min(distance2, ex * ex + ey * ey);
+                    // Half-open crossings count shared endpoints only once.
+                    if ((a.y > sy) != (b.y > sy) && sx < a.x + (sy - a.y) * dx / dy)
+                        winding += b.y > a.y ? 1 : -1;
+                }
+                start += count;
+            }
+            const float distance = static_cast<float>(STBTT_sqrt(distance2));
+            const float value = 128.0f + (winding == 0 ? -distance : distance) * 128.0f / padding;
+            result[y * *width + x] = static_cast<unsigned char>(std::clamp(value, 0.0f, 255.0f));
+        }
+    STBTT_free(points, font.userdata);
+    STBTT_free(lengths, font.userdata);
+    return result;
+}
+
 // european adds the letters of western and central European languages,
 // modern Greek and basic Cyrillic (Latin-1 Supplement, Latin Extended-A,
 // U+0386 to U+03CE, U+0410 to U+044F, Io), curly quotation marks, the euro
@@ -243,9 +326,13 @@ int main(int argc, char **argv)
         int bearing = 0;
         stbtt_GetCodepointHMetrics(&font, codepoint, &advance, &bearing);
         glyph.advance = static_cast<float>(advance) * scale;
-        glyph.bitmap = stbtt_GetCodepointSDF(&font, scale, codepoint, range, 128,
-                                             128.0f / static_cast<float>(range), &glyph.w, &glyph.h,
-                                             &glyph.xoff, &glyph.yoff);
+        if (font.cff.size != 0)
+            glyph.bitmap = cff_sdf(font, scale, codepoint, range, &glyph.w, &glyph.h,
+                                    &glyph.xoff, &glyph.yoff);
+        else
+            glyph.bitmap = stbtt_GetCodepointSDF(&font, scale, codepoint, range, 128,
+                                                 128.0f / static_cast<float>(range), &glyph.w, &glyph.h,
+                                                 &glyph.xoff, &glyph.yoff);
         glyphs.push_back(glyph);
     }
 
