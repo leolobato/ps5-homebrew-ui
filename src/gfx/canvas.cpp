@@ -126,8 +126,13 @@ GLuint Canvas::save_region(int x, int y, int w, int h) const
     const int cw = std::clamp(w - (cx - x), 0, width_ - cx);
     const int ch = std::clamp(h - (cy - src_y), 0, height_ - cy);
     if (cw > 0 && ch > 0)
-        glCopyImageSubData(texture_, GL_TEXTURE_2D, 0, cx, cy, 0, texture, GL_TEXTURE_2D, 0, cx - x,
-                           cy - src_y, 0, cw, ch, 1);
+    {
+        GLint previous_read_framebuffer = 0;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_framebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, resolve_framebuffer_);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, cx - x, cy - src_y, cx, cy, cw, ch);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read_framebuffer));
+    }
     return texture;
 }
 

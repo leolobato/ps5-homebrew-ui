@@ -22,8 +22,8 @@ layout(location = 2) in vec4 a_bottom;
 layout(location = 3) in vec4 a_border;
 layout(location = 4) in vec4 a_params;
 layout(location = 5) in vec4 a_extra;
-layout(location = 0) uniform vec4 u_viewport; // scale, offset x, offset y
-layout(location = 1) uniform vec2 u_surface;
+uniform vec4 u_viewport; // scale, offset x, offset y
+uniform vec2 u_surface;
 out vec2 v_local;
 out vec2 v_virtual;
 out vec2 v_uv;
@@ -75,9 +75,9 @@ void main()
 )";
 
 constexpr const char *kFragment = R"(
-layout(location = 0) uniform vec4 u_viewport;
-layout(location = 2) uniform sampler2D u_texture;
-layout(location = 3) uniform sampler2D u_fonts[6];
+uniform vec4 u_viewport;
+uniform sampler2D u_texture;
+uniform sampler2D u_fonts[6];
 in vec2 v_local;
 in vec2 v_virtual;
 in vec2 v_uv;
@@ -249,8 +249,8 @@ void main()
 constexpr const char *kMeshVertex = R"(
 layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec4 a_color;
-layout(location = 0) uniform vec4 u_viewport;
-layout(location = 1) uniform vec2 u_surface;
+uniform vec4 u_viewport;
+uniform vec2 u_surface;
 out vec4 v_color;
 void main()
 {
@@ -409,18 +409,23 @@ void GlBatch::draw(const DrawList &list, const Viewport &viewport, int surface_w
     for (GLuint program : {program_, mesh_program_})
     {
         glUseProgram(program);
-        glUniform4f(0, viewport.scale, viewport.offset_x, viewport.offset_y, 0.0f);
-        glUniform2f(1, static_cast<float>(surface_width), static_cast<float>(surface_height));
+        glUniform4f(glGetUniformLocation(program, "u_viewport"), viewport.scale,
+                    viewport.offset_x, viewport.offset_y, 0.0f);
+        glUniform2f(glGetUniformLocation(program, "u_surface"),
+                    static_cast<float>(surface_width), static_cast<float>(surface_height));
     }
     glUseProgram(program_);
-    glUniform1i(2, 0);
+    glUniform1i(glGetUniformLocation(program_, "u_texture"), 0);
     // Font atlases on units 1..4 for the whole frame; unit 0 changes per run.
     const GLint font_units[kFontSlots] = {1, 2, 3, 4, 5, 6};
-    glUniform1iv(3, static_cast<GLsizei>(kFontSlots), font_units);
-    for (std::uint32_t slot = 0; slot < font_count_; ++slot)
+    glUniform1iv(glGetUniformLocation(program_, "u_fonts[0]"),
+                 static_cast<GLsizei>(kFontSlots), font_units);
+    for (std::uint32_t slot = 0; slot < kFontSlots; ++slot)
     {
         glActiveTexture(GL_TEXTURE1 + slot);
-        glBindTexture(GL_TEXTURE_2D, font_textures_[slot]);
+        const std::uint32_t source =
+            font_count_ > 0 ? std::min(slot, font_count_ - 1) : 0;
+        glBindTexture(GL_TEXTURE_2D, font_count_ > 0 ? font_textures_[source] : 0);
     }
     glActiveTexture(GL_TEXTURE0);
 
@@ -467,8 +472,17 @@ void GlBatch::draw(const DrawList &list, const Viewport &viewport, int surface_w
             glDrawArrays(GL_TRIANGLES, static_cast<GLint>(run.first),
                          static_cast<GLsizei>(run.count));
         else
-            glDrawArraysInstancedBaseInstance(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(run.count),
-                                              run.first);
+        {
+            // macOS exposes OpenGL 4.1, before base-instance draws became core.
+            // Rebase the six per-instance attributes on the run instead.
+            glBindBuffer(GL_ARRAY_BUFFER, buffer_);
+            constexpr GLsizei stride = sizeof(Instance);
+            const std::uintptr_t base = static_cast<std::uintptr_t>(run.first) * sizeof(Instance);
+            for (GLuint attribute = 0; attribute < 6; ++attribute)
+                glVertexAttribPointer(attribute, 4, GL_FLOAT, GL_FALSE, stride,
+                                      reinterpret_cast<const void *>(base + attribute * 16));
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(run.count));
+        }
         ++draw_calls_;
     }
     if (scissor)

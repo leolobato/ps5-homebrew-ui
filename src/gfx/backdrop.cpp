@@ -22,12 +22,12 @@ void main()
 )";
 
 constexpr const char *kFragment = R"(
-layout(location = 0) uniform vec2 u_resolution;
-layout(location = 1) uniform float u_time;
-layout(location = 2) uniform int u_mode;
-layout(location = 3) uniform vec4 u_colors[4];
-layout(location = 7) uniform vec4 u_params;
-layout(location = 8) uniform float u_opacity;
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform int u_mode;
+uniform vec4 u_colors[4];
+uniform vec4 u_params;
+uniform float u_opacity;
 out vec4 frag_color;
 
 float hash(vec2 p)
@@ -279,9 +279,10 @@ void Backdrop::draw(const BackdropSpec &spec, int width, int height, float opaci
         glDisable(GL_BLEND);
     }
     glUseProgram(program_);
-    glUniform2f(0, static_cast<float>(width), static_cast<float>(height));
-    glUniform1f(1, spec.time);
-    glUniform1i(2, static_cast<int>(spec.mode));
+    glUniform2f(glGetUniformLocation(program_, "u_resolution"), static_cast<float>(width),
+                static_cast<float>(height));
+    glUniform1f(glGetUniformLocation(program_, "u_time"), spec.time);
+    glUniform1i(glGetUniformLocation(program_, "u_mode"), static_cast<int>(spec.mode));
     float colors[16];
     for (int i = 0; i < 4; ++i)
     {
@@ -290,9 +291,10 @@ void Backdrop::draw(const BackdropSpec &spec, int width, int height, float opaci
         colors[i * 4 + 2] = spec.colors[i].b;
         colors[i * 4 + 3] = spec.colors[i].a;
     }
-    glUniform4fv(3, 4, colors);
-    glUniform4f(7, spec.params[0], spec.params[1], spec.params[2], spec.params[3]);
-    glUniform1f(8, opacity);
+    glUniform4fv(glGetUniformLocation(program_, "u_colors[0]"), 4, colors);
+    glUniform4f(glGetUniformLocation(program_, "u_params"), spec.params[0], spec.params[1],
+                spec.params[2], spec.params[3]);
+    glUniform1f(glGetUniformLocation(program_, "u_opacity"), opacity);
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);

@@ -29,8 +29,8 @@ void main()
 
 // Nine-tap Gaussian from five bilinear fetches (weights after Rakos).
 constexpr const char *kBlurFragment = R"(
-layout(location = 0) uniform sampler2D u_texture;
-layout(location = 1) uniform vec2 u_step;
+uniform sampler2D u_texture;
+uniform vec2 u_step;
 in vec2 v_uv;
 out vec4 frag_color;
 void main()
@@ -137,18 +137,20 @@ void Renderer::capture_glass(std::size_t layers, float virtual_width, float virt
     glDisable(GL_BLEND);
     glDisable(GL_SCISSOR_TEST);
     glUseProgram(blur_program_);
-    glUniform1i(0, 0);
+    glUniform1i(glGetUniformLocation(blur_program_, "u_texture"), 0);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(blur_vao_);
     for (float step : {1.0f, 2.2f})
     {
         glass_b_.bind();
         glBindTexture(GL_TEXTURE_2D, glass_a_.texture());
-        glUniform2f(1, step / static_cast<float>(kGlassWidth), 0.0f);
+        glUniform2f(glGetUniformLocation(blur_program_, "u_step"),
+                    step / static_cast<float>(kGlassWidth), 0.0f);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glass_a_.bind();
         glBindTexture(GL_TEXTURE_2D, glass_b_.texture());
-        glUniform2f(1, 0.0f, step / static_cast<float>(kGlassHeight));
+        glUniform2f(glGetUniformLocation(blur_program_, "u_step"), 0.0f,
+                    step / static_cast<float>(kGlassHeight));
         glDrawArrays(GL_TRIANGLES, 0, 3);
         draw_calls_ += 2;
     }

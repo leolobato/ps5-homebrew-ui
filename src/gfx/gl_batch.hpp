@@ -7,7 +7,7 @@
 #include "gfx/draw_list.hpp"
 #include "gfx/font.hpp"
 
-#include <GL/glcorearb.h>
+#include "gfx/gl.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +17,7 @@ namespace hui::gfx
 
 // Draws a DrawList with one instanced program: all instances are uploaded
 // once per frame into an orphaned stream buffer, then each run is one
-// glDrawArraysInstancedBaseInstance call (triangle lists only).
+// one instanced draw call (triangle lists only).
 class GlBatch
 {
   public:

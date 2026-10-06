@@ -6,7 +6,7 @@
 
 #include "gfx/backdrop_spec.hpp"
 
-#include <GL/glcorearb.h>
+#include "gfx/gl.hpp"
 
 namespace hui::gfx
 {

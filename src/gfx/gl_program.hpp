@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <GL/glcorearb.h>
+#include "gfx/gl.hpp"
 
 namespace hui::gfx
 {
