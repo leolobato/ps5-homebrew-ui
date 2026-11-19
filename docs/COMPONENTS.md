@@ -124,7 +124,7 @@ Rectangles come from the layout helpers (`ui::Row`, `ui::Column`,
 | [Actions](#actions) | `PushButton`, `IconButton`, `ButtonGroup`, `SplitButton`, `HoldButton`, `QuickAction`, `QuickActionBar`, `Banner`, `CoachMark` | [components/actions.md](components/actions.md) |
 | [Forms](#forms) | `Form`, `Stepper`, `ChoicePicker`, `TextField` | [components/forms.md](components/forms.md) |
 | [Pickers](#pickers) | `Select`, `CheckGroup`, `RadioGroup`, `TagSelect`, `ColorPicker`, `WheelPicker`, `DatePicker`, `TimePicker`, `Slider`, `RangeSlider` | [components/pickers.md](components/pickers.md) |
-| [Entry](#entry) | `Keyboard`, `PinEntry`, `SearchField`, `KeyBinder`, `InputPrompt` | [components/entry.md](components/entry.md) |
+| [Entry](#entry) | `Keyboard`, `PinEntry`, `SearchField`, `KeyBinder`, `KeyPicker`, `InputPrompt` | [components/entry.md](components/entry.md) |
 | [Indicators](#indicators) | `ProgressBar`, `ProgressRing`, `Spinner`, `Meter`, `Badge`, `Chip`, `Avatar`, `AvatarStack`, `Rating`, `Counter`, `Skeleton`, `StatTile`, `EmptyState` | [components/indicators.md](components/indicators.md) |
 | [Data](#data) | `Table`, `DetailList`, `Timeline`, `BarChart`, `LineChart`, `DonutChart`, `Legend`, `Calendar`, `Countdown`, `StorageBar`, `StatusBar` | [components/data.md](components/data.md) |
 | [Media](#media) | `TextView`, `ImageViewer`, `MediaControls`, `LoadingScreen` | [components/media.md](components/media.md) |
@@ -328,7 +328,7 @@ Rectangles come from the layout helpers (`ui::Row`, `ui::Column`,
 
 ### Entry
 
-`ui::Keyboard`, `ui::PinEntry`, `ui::SearchField`, `ui::KeyBinder`, `ui::InputPrompt` &middot; [knobs, slots, events and cues](components/entry.md)
+`ui::Keyboard`, `ui::PinEntry`, `ui::SearchField`, `ui::KeyBinder`, `ui::KeyPicker`, `ui::InputPrompt` &middot; [knobs, slots, events and cues](components/entry.md)
 
 <img src="media/designs/components-entry.webp" width="640" alt="Entry in motion">
 

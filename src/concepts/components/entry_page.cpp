@@ -5,7 +5,7 @@
 // Everything a screen needs to take text and buttons from a controller. On
 // the left a TextField, the Keyboard and a PinEntry; in the middle a
 // SearchField over the catalogue and the button that opens an InputPrompt; on
-// the right a KeyBinder.
+// the right a KeyBinder, and under it the button that opens a KeyPicker.
 //
 // The one design problem of such a screen is that three fields want one
 // keyboard, and the keyboard wants the D-pad the fields are reached with. The
@@ -20,7 +20,9 @@
 
 #include "ui/components/input_prompt.hpp"
 #include "ui/components/key_binder.hpp"
+#include "ui/components/key_picker.hpp"
 #include "ui/components/keyboard.hpp"
+#include "ui/components/overlay.hpp"
 #include "ui/components/pin_entry.hpp"
 #include "ui/components/search_field.hpp"
 #include "ui/components/text_field.hpp"
@@ -28,6 +30,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace hui::concepts::gallery
 {
@@ -46,6 +50,8 @@ constexpr Rect kPin{96.0f, 746.0f, 800.0f, 160.0f};
 constexpr Rect kSearch{936.0f, 290.0f, 440.0f, 380.0f};
 constexpr Rect kButton{936.0f, 752.0f, 300.0f, 56.0f};
 constexpr Rect kBinder{1412.0f, 290.0f, 412.0f, 470.0f};
+constexpr Rect kShortcut{1412.0f, 846.0f, 412.0f, 56.0f}; // opens the KeyPicker
+constexpr float kPickerWidth = 1320.0f;
 constexpr float kCaption = 268.0f;
 constexpr float kStatus = 930.0f;
 constexpr float kPadKey = 100.0f; // one key of the numeric pad
@@ -59,6 +65,7 @@ enum Stop
     kStopSearch,
     kStopPrompt,
     kStopBinder,
+    kStopShortcut,
 };
 
 enum BindId
@@ -118,6 +125,11 @@ constexpr ui::Hint kHintsList[] = {
 constexpr ui::Hint kHintsListening[] = {
     {ui::Button::circle, "Keep the old button"},
 };
+constexpr ui::Hint kHintsPicker[] = {
+    {ui::Button::dpad, "Keys"},     {ui::Button::cross, "Pick or drop"},
+    {ui::Button::square, "Clear"},  {ui::Button::triangle, "Done"},
+    {ui::Button::circle, "Cancel"},
+};
 constexpr ui::Hint kHintsPrompt[] = {
     {ui::Button::dpad, "Keys"},
     {ui::Button::cross, "Press"},
@@ -156,6 +168,31 @@ constexpr app::TourStep kTour[] = {
     {0.3f, action_bit(Action::confirm)},
     {1.0f, action_bit(Action::north), Direction::none, "entry-flat"},
     {0.8f, action_bit(Action::west)},
+    // Down past the binder's last row to the shortcut button; the KeyPicker
+    // opens on F5, is cleared, and takes S, then Ctrl.
+    {0.3f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.4f, action_bit(Action::confirm)},
+    {0.6f, action_bit(Action::west)},
+    {0.3f, 0, Direction::down},
+    {0.2f, 0, Direction::down},
+    {0.2f, 0, Direction::down},
+    {0.2f, 0, Direction::left},
+    {0.2f, 0, Direction::left},
+    {0.2f, 0, Direction::left},
+    {0.3f, action_bit(Action::confirm)},
+    {0.3f, 0, Direction::down},
+    {0.2f, 0, Direction::down},
+    {0.2f, 0, Direction::left},
+    {0.3f, action_bit(Action::confirm)},
+    {0.8f, action_bit(Action::north), Direction::none, "entry-keys"},
+    {0.5f, 0, Direction::up},
 };
 
 const char *button_name(Action action)
@@ -221,6 +258,9 @@ class EntryPage final : public Page
         prompt_.set_title("Name this save");
         prompt_.field.set_placeholder("Untitled");
 
+        picker_.set_keys({"f5"});
+        shortcut_ = picker_.keys();
+
         restyle(ui::default_theme(), false);
     }
 
@@ -230,7 +270,8 @@ class EntryPage final : public Page
     }
     const char *summary() const override
     {
-        return "Typing with a pad: Keyboard, PinEntry, SearchField, KeyBinder, InputPrompt";
+        return "Typing with a pad: Keyboard, PinEntry, SearchField, KeyBinder, KeyPicker, "
+               "InputPrompt";
     }
     const char *variant() const override
     {
@@ -250,6 +291,7 @@ class EntryPage final : public Page
         pin_editing_ = false;
         demo_ = nullptr;
         prompt_.dismiss();
+        picker_open_ = false;
         binder_.stop_listening();
         keyboard_.enter();
         status_.clear();
@@ -258,7 +300,9 @@ class EntryPage final : public Page
     void update(const InputFrame &input, float dt, ui::Feedback &feedback) override
     {
         clock_ += dt;
-        if (prompt_.is_open())
+        if (picker_open_)
+            update_picker(input, feedback); // it takes every button while open
+        else if (prompt_.is_open())
             update_prompt(input, feedback);
         else if (binder_.listening())
             update_binder(input, feedback); // it is waiting for any button
@@ -287,9 +331,15 @@ class EntryPage final : public Page
         search_.update(dt);
         binder_.update(dt);
         prompt_.update(dt);
+        picker_.update(dt);
+        picker_fade_.target = picker_open_ ? 1.0f : 0.0f;
+        picker_fade_.update(dt, reduced_ ? 60.0f : 16.0f);
+        shortcut_focus_.target = stop_ == kStopShortcut ? 1.0f : 0.0f;
+        shortcut_focus_.update(dt, 18.0f);
         button_focus_.target = stop_ == kStopPrompt ? 1.0f : 0.0f;
         button_focus_.update(dt, 18.0f);
         button_press_.update(dt, 9.0f);
+        shortcut_press_.update(dt, 9.0f);
         edge_.update(dt, 9.0f);
     }
 
@@ -297,7 +347,7 @@ class EntryPage final : public Page
     {
         ui::Painter paint(canvas.list, canvas.fonts, theme_, canvas.glass);
         const float nudge = reduced_ ? 0.0f : ui::shake(edge_.value, clock_, 10.0f);
-        const int column = stop_ == kStopBinder ? 2 : (stop_ >= kStopSearch ? 1 : 0);
+        const int column = stop_ >= kStopBinder ? 2 : (stop_ >= kStopSearch ? 1 : 0);
         const auto caption = [&](int index, const char *text, const Rect &area)
         {
             const bool active = index == column;
@@ -320,6 +370,20 @@ class EntryPage final : public Page
                    kBinder.x, legend, 20.0f, paint.page_text_muted());
         paint.body(ui::fit_body(paint, "A row listens for four seconds", 20.0f, kBinder.w),
                    kBinder.x, legend + 30.0f, 20.0f, paint.page_text_muted());
+
+        ui::Look shortcut_look;
+        shortcut_look.focus = shortcut_focus_.value;
+        shortcut_look.press = tween::clamp01(shortcut_press_.value);
+        std::string shortcut = "Shortcut: ";
+        for (std::size_t i = 0; i < shortcut_.size(); ++i)
+        {
+            const ui::KeyPickerKey *key = ui::find_picker_key(shortcut_[i]);
+            shortcut += (i > 0 ? " + " : "") + std::string(key != nullptr ? key->label : "?");
+        }
+        if (shortcut_.empty())
+            shortcut += "none";
+        paint.button(kShortcut, ui::fit_label(paint, shortcut, 24.0f, kShortcut.w - 28.0f),
+                     ui::ButtonKind::secondary, shortcut_look);
 
         paint.label(ui::fit_label(paint, "The overlay most screens want", 20.0f, kSearch.w),
                     kButton.x, kButton.y - 18.0f, 20.0f,
@@ -346,10 +410,24 @@ class EntryPage final : public Page
     void draw_modal(ui::Canvas &canvas) const override
     {
         prompt_.draw(canvas);
+        const float fade = tween::clamp01(picker_fade_.value);
+        if (fade > 0.01f)
+        {
+            // The picker is embeddable; the page gives it a scrim and an
+            // opaque panel, as a sheet or a dialog of a real screen would.
+            canvas.list.rounded_rect({0.0f, 0.0f, 1920.0f, 1080.0f}, 0.0f,
+                                     Color{0.0f, 0.0f, 0.0f, 0.55f * fade});
+            canvas.list.push_opacity(fade);
+            ui::draw_overlay_panel(canvas, theme_, picker_.bounds(), false);
+            picker_.draw(canvas);
+            canvas.list.pop_opacity();
+        }
     }
 
     std::span<const ui::Hint> hints() const override
     {
+        if (picker_open_)
+            return kHintsPicker;
         if (prompt_.is_open())
             return kHintsPrompt;
         if (binder_.listening())
@@ -405,6 +483,7 @@ class EntryPage final : public Page
         ui::SearchFieldStyle search;
         ui::KeyBinderStyle binder;
         ui::InputPromptStyle prompt;
+        ui::KeyPickerStyle picker;
         field.max_length = kNameLimit;
         field.on_page = true;
         keys.bindings.space = Action::north; // Square is the page's variant button
@@ -418,6 +497,7 @@ class EntryPage final : public Page
         search.exits.down = true;
         binder.on_page = true;
         binder.exits.left = true;
+        binder.exits.down = true;
         prompt.max_length = 16;
         ui::KeyboardStyle prompt_keys = keys;
         switch (variant_)
@@ -439,6 +519,10 @@ class EntryPage final : public Page
             binder.row_height = 56.0f;
             binder.highlight.kind = ui::HighlightKind::bar;
             prompt_keys.highlight.kind = ui::HighlightKind::ring;
+            // One key only: Cross replaces the pick.
+            picker.max_keys = 1;
+            picker.highlight.kind = ui::HighlightKind::ring;
+            picker.radius_source = ui::RadiusSource::pill;
             break;
         case 2:
             keys.surfaces = false;
@@ -462,6 +546,10 @@ class EntryPage final : public Page
             prompt_keys.surfaces = false;
             prompt_keys.highlight.kind = ui::HighlightKind::underline;
             prompt.buttons = false;
+            picker.surfaces = false;
+            picker.highlight.kind = ui::HighlightKind::underline;
+            picker.done_key = false;
+            picker.gap = 4.0f;
             break;
         default:
             break;
@@ -477,12 +565,21 @@ class EntryPage final : public Page
         themed(search);
         themed(binder);
         themed(prompt);
+        themed(picker);
         name_.style = field;
         keyboard_.style = keys;
         pin_.style = pin;
         search_.style = search;
         binder_.style = binder;
         prompt_.style = prompt;
+        picker_.style = picker;
+        // A pick of more keys than the variant allows starts over.
+        if (static_cast<int>(shortcut_.size()) > picker.max_keys)
+            shortcut_.resize(static_cast<std::size_t>(picker.max_keys));
+        picker_.set_keys(shortcut_);
+        const float picker_height = picker_.preferred_height(kPickerWidth);
+        picker_.set_bounds({960.0f - kPickerWidth * 0.5f, 540.0f - picker_height * 0.5f,
+                            kPickerWidth, picker_height});
         // The prompt gives its keyboard the theme and the sizes; the look of
         // the keys is ours to choose.
         prompt_.keyboard.style.surfaces = prompt_keys.surfaces;
@@ -693,6 +790,9 @@ class EntryPage final : public Page
         case kStopPrompt:
             update_button(input, feedback);
             break;
+        case kStopShortcut:
+            update_shortcut(input, feedback);
+            break;
         default:
             update_binder(input, feedback);
             break;
@@ -828,6 +928,57 @@ class EntryPage final : public Page
         {
             go(kStopSearch, kSearch, feedback);
         }
+        else if (event == ui::Event::none && binder_.exit() == Direction::down)
+        {
+            go(kStopShortcut, kShortcut, feedback);
+        }
+    }
+
+    void update_shortcut(const InputFrame &input, ui::Feedback &feedback)
+    {
+        if (input.nav == Direction::up)
+            go(kStopBinder, kBinder, feedback);
+        else if (input.nav == Direction::left)
+            go(kStopPrompt, kButton, feedback);
+        else if (input.nav != Direction::none)
+            edge(input, kShortcut, feedback);
+        else if (input.is_pressed(Action::confirm))
+        {
+            shortcut_press_.trigger();
+            picker_.set_keys(shortcut_);
+            if (shortcut_.empty() || !picker_.focus_key(shortcut_.back()))
+                picker_.focus_key("a");
+            picker_.enter();
+            picker_open_ = true;
+            ui::play_cue(feedback, picker_.style, picker_.style.sounds.open, kShortcut.cx());
+        }
+    }
+
+    void update_picker(const InputFrame &input, ui::Feedback &feedback)
+    {
+        const ui::Event event = picker_.handle(input, feedback);
+        if (event == ui::Event::changed)
+        {
+            const std::string summary = picker_.summary();
+            status_ = "KeyPicker  \xC2\xB7  Event::changed  \xC2\xB7  " +
+                      (summary.empty() ? std::string("nothing picked") : summary);
+        }
+        else if (event == ui::Event::activated)
+        {
+            shortcut_ = picker_.keys();
+            picker_open_ = false;
+            status_ = "KeyPicker  \xC2\xB7  Event::activated  \xC2\xB7  " + picker_.summary();
+        }
+        else if (event == ui::Event::cancelled)
+        {
+            picker_open_ = false;
+            ui::play_cue(feedback, picker_.style, picker_.style.sounds.close, kShortcut.cx());
+            status_ = "KeyPicker  \xC2\xB7  Event::cancelled";
+        }
+        else if (event == ui::Event::refused)
+        {
+            status_ = "KeyPicker  \xC2\xB7  Event::refused";
+        }
     }
 
     void update_prompt(const InputFrame &input, ui::Feedback &feedback)
@@ -855,6 +1006,12 @@ class EntryPage final : public Page
     ui::SearchField search_;
     ui::KeyBinder binder_;
     ui::InputPrompt prompt_;
+    ui::KeyPicker picker_;
+    bool picker_open_ = false;
+    std::vector<std::string> shortcut_; // what the picker last accepted
+    tween::Spring picker_fade_;
+    tween::Spring shortcut_focus_;
+    ui::Pulse shortcut_press_;
     int stop_ = kStopName;
     int variant_ = 0;
     bool typing_ = false;        // the keyboard has the focus and feeds the stop

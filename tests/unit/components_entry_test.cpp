@@ -1,16 +1,19 @@
-// ps5-homebrew-ui - Tests: Keyboard, PinEntry, SearchField, KeyBinder and InputPrompt behaviour.
-// Copyright (C) 2026 BlackBearReloaded
-// SPDX-License-Identifier: GPL-3.0-or-later
+// ps5-homebrew-ui - Tests: Keyboard, PinEntry, SearchField, KeyBinder, KeyPicker and InputPrompt
+// behaviour. Copyright (C) 2026 BlackBearReloaded SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "component_fixture.hpp"
+#include "concepts/components/page.hpp"
 #include "ui/components/input_prompt.hpp"
 #include "ui/components/key_binder.hpp"
+#include "ui/components/key_picker.hpp"
 #include "ui/components/keyboard.hpp"
 #include "ui/components/pin_entry.hpp"
 #include "ui/components/search_field.hpp"
 
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,6 +32,8 @@ using hui::ui::KeyBinder;
 using hui::ui::Keyboard;
 using hui::ui::KeyboardLayout;
 using hui::ui::KeyboardShift;
+using hui::ui::KeyPicker;
+using hui::ui::KeyPickerKey;
 using hui::ui::PinEntry;
 using hui::ui::PinState;
 using hui::ui::SearchField;
@@ -508,6 +513,8 @@ TEST_F(ComponentsEntry, KeyBinderListensSwapsRefusesAndResets)
 
 TEST_F(ComponentsEntry, InputPromptComposesAFieldAndAKeyboard)
 {
+    KeyPicker picker;
+    picker.set_bounds({100.0f, 520.0f, 900.0f, 420.0f});
     InputPrompt prompt;
     prompt.set_title("Name this save");
     prompt.style.max_length = 4;
@@ -561,6 +568,223 @@ TEST_F(ComponentsEntry, InputPromptComposesAFieldAndAKeyboard)
     EXPECT_FALSE(prompt.visible());
 }
 
+TEST_F(ComponentsEntry, KeyPickerNamesAreWordsAndFillTheGrid)
+{
+    std::set<std::string_view> names;
+    int columns[6] = {};
+    for (const KeyPickerKey &key : hui::ui::kKeyPickerKeys)
+    {
+        EXPECT_TRUE(names.insert(key.name).second) << key.name;
+        EXPECT_FALSE(key.name.empty());
+        EXPECT_FALSE(key.label.empty()) << key.name;
+        // Names go into text that separates with + , ; = and spaces.
+        for (char c : key.name)
+            EXPECT_TRUE((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) << key.name;
+        ASSERT_LT(key.row, 6);
+        columns[key.row] += key.span;
+    }
+    // Every row covers the 15 columns; the last leaves 2 for the Done key.
+    for (int row = 0; row < 5; ++row)
+        EXPECT_EQ(columns[row], 15) << row;
+    EXPECT_EQ(columns[5], 13);
+    for (std::string_view name : {"ctrl", "shift", "alt", "lwin"})
+    {
+        EXPECT_NE(hui::ui::find_picker_key(name), nullptr) << name;
+        EXPECT_GE(hui::ui::picker_modifier_rank(name), 0) << name;
+    }
+    EXPECT_EQ(hui::ui::picker_modifier_rank("capslock"), -1);
+    EXPECT_EQ(hui::ui::find_picker_key("mouse_left"), nullptr);
+}
+
+TEST_F(ComponentsEntry, KeyPickerKeepsModifiersFirstAndStopsAtFour)
+{
+    KeyPicker picker;
+    picker.set_bounds({100.0f, 100.0f, 1320.0f, 560.0f});
+    std::vector<std::string> seen;
+    picker.on_change = [&](const std::vector<std::string> &keys) { seen = keys; };
+
+    EXPECT_EQ(picker.tap("s", feedback_), Event::changed);
+    EXPECT_EQ(picker.tap("ctrl", feedback_), Event::changed);
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"ctrl", "s"}));
+    EXPECT_EQ(seen, picker.keys());
+    EXPECT_EQ(picker.summary(), "Ctrl + S");
+    EXPECT_TRUE(picker.picked("ctrl"));
+    EXPECT_EQ(picker.focused_name(), "ctrl");
+
+    feedback_.clear();
+    EXPECT_EQ(picker.tap("lwin", feedback_), Event::changed);
+    EXPECT_TRUE(asked(Cue::toggle));
+    EXPECT_EQ(picker.tap("shift", feedback_), Event::changed);
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"ctrl", "shift", "lwin", "s"}));
+    // A fifth key is refused; dropping one makes room again.
+    feedback_.clear();
+    EXPECT_EQ(picker.tap("a", feedback_), Event::refused);
+    EXPECT_TRUE(asked(Cue::error));
+    EXPECT_EQ(picker.keys().size(), 4u);
+    EXPECT_EQ(picker.tap("lwin", feedback_), Event::changed);
+    EXPECT_EQ(picker.tap("a", feedback_), Event::changed);
+    // The other keys keep the order they were picked in.
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"ctrl", "shift", "s", "a"}));
+    EXPECT_EQ(picker.summary(), "Ctrl + Shift + S + A");
+
+    // Cross on the focused key drops it.
+    picker.focus_key("s");
+    EXPECT_EQ(send(picker, press(Action::confirm)), Event::changed);
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"ctrl", "shift", "a"}));
+    EXPECT_EQ(picker.tap("nokey", feedback_), Event::refused);
+}
+
+TEST_F(ComponentsEntry, KeyPickerClearsAcceptsAndCancels)
+{
+    KeyPicker picker;
+    picker.set_bounds({100.0f, 100.0f, 1320.0f, 560.0f});
+    int accepted = 0;
+    int cancelled = 0;
+    std::vector<std::string> taken;
+    picker.on_accept = [&](const std::vector<std::string> &keys)
+    {
+        ++accepted;
+        taken = keys;
+    };
+    picker.on_cancel = [&]() { ++cancelled; };
+
+    // Nothing picked: Triangle and Square are refused.
+    EXPECT_EQ(send(picker, press(Action::north)), Event::refused);
+    EXPECT_EQ(send(picker, press(Action::west)), Event::refused);
+    EXPECT_EQ(accepted, 0);
+
+    picker.tap("f5", feedback_);
+    EXPECT_EQ(send(picker, press(Action::west)), Event::changed);
+    EXPECT_TRUE(picker.keys().empty());
+
+    picker.tap("space", feedback_);
+    EXPECT_EQ(send(picker, press(Action::north)), Event::activated);
+    EXPECT_TRUE(asked(Cue::select));
+    EXPECT_EQ(accepted, 1);
+    EXPECT_EQ(taken, (std::vector<std::string>{"space"}));
+
+    // The Done key does the same.
+    picker.set_focus(picker.key_count() - 1);
+    EXPECT_TRUE(picker.focused_name().empty());
+    EXPECT_EQ(send(picker, press(Action::confirm)), Event::activated);
+    EXPECT_EQ(accepted, 2);
+
+    EXPECT_EQ(send(picker, press(Action::back)), Event::cancelled);
+    EXPECT_TRUE(asked(Cue::back));
+    EXPECT_EQ(cancelled, 1);
+
+    // An empty pick may be accepted where the screen allows it.
+    picker.style.allow_empty = true;
+    picker.clear(feedback_);
+    EXPECT_EQ(send(picker, press(Action::north)), Event::activated);
+
+    // Without the Done key the space bar takes its columns.
+    picker.style.done_key = false;
+    picker.update(kFrame);
+    EXPECT_EQ(picker.key_count(), static_cast<int>(std::size(hui::ui::kKeyPickerKeys)));
+    picker.focus_key("space");
+    const hui::gfx::Rect space = picker.key_rect(picker.focus());
+    picker.focus_key("right");
+    EXPECT_GT(space.w, picker.key_rect(picker.focus()).w * 7.0f);
+}
+
+TEST_F(ComponentsEntry, KeyPickerSingleKeyReplacesAndSetKeysOrders)
+{
+    KeyPicker picker;
+    EXPECT_TRUE(picker.set_keys({"e", "alt", "ctrl"}));
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"ctrl", "alt", "e"}));
+    // Unknown names, repeats and names past the limit are dropped.
+    EXPECT_FALSE(picker.set_keys(std::vector<std::string>{"q", "q", "x;", "w", "e", "r", "t"}));
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"q", "w", "e", "r"}));
+
+    picker.style.max_keys = 1;
+    picker.set_keys(std::vector<std::string_view>{"w"});
+    EXPECT_EQ(picker.tap("up", feedback_), Event::changed);
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"up"}));
+    EXPECT_EQ(picker.tap("up", feedback_), Event::changed);
+    EXPECT_TRUE(picker.keys().empty());
+}
+
+TEST_F(ComponentsEntry, KeyPickerReachesEveryKeyAndRefusesAtEdges)
+{
+    KeyPicker picker;
+    picker.set_bounds({100.0f, 100.0f, 1320.0f, 560.0f});
+    // Walk the grid from every key in every direction: each key is reached.
+    std::set<int> reached{0};
+    std::vector<int> open{0};
+    while (!open.empty())
+    {
+        const int from = open.back();
+        open.pop_back();
+        for (Direction direction :
+             {Direction::up, Direction::down, Direction::left, Direction::right})
+        {
+            picker.set_focus(from);
+            picker.handle(nav(direction), feedback_);
+            if (reached.insert(picker.focus()).second)
+                open.push_back(picker.focus());
+        }
+    }
+    EXPECT_EQ(static_cast<int>(reached.size()), picker.key_count());
+
+    // Up and down come back to the column the player left.
+    picker.focus_key("g");
+    send(picker, nav(Direction::down));
+    send(picker, nav(Direction::down));
+    EXPECT_EQ(picker.focused_name(), "space");
+    send(picker, nav(Direction::up));
+    send(picker, nav(Direction::up));
+    EXPECT_EQ(picker.focused_name(), "g");
+
+    // The top refuses; a held direction stops at a side instead of wrapping.
+    picker.focus_key("escape");
+    EXPECT_EQ(send(picker, nav(Direction::up)), Event::refused);
+    EXPECT_EQ(send(picker, repeat(Direction::left)), Event::refused);
+    EXPECT_EQ(send(picker, nav(Direction::left)), Event::moved);
+    EXPECT_EQ(picker.focused_name(), "delete");
+    picker.style.exits.right = true;
+    EXPECT_EQ(send(picker, nav(Direction::right)), Event::none);
+    EXPECT_EQ(picker.exit(), Direction::right);
+}
+
+TEST_F(ComponentsEntry, GalleryPageTourPicksAShortcut)
+{
+    const std::unique_ptr<hui::concepts::gallery::Page> page =
+        hui::concepts::gallery::make_entry_page(context_);
+    const auto frame = [&](const hui::InputFrame &input)
+    {
+        feedback_.clear();
+        page->update(input, kFrame, feedback_);
+        hui::ui::Canvas target = canvas();
+        page->draw(target);
+        page->draw_modal(target);
+    };
+    bool picker_seen = false;
+    for (const hui::app::TourStep &step : page->tour())
+    {
+        for (int i = 0, frames = static_cast<int>(step.wait / kFrame); i < frames; ++i)
+            frame(idle());
+        if (step.capture != nullptr && std::string_view(step.capture) == "entry-keys")
+        {
+            // The picker is open over the page.
+            ASSERT_GE(page->hints().size(), 2u);
+            EXPECT_STREQ(page->hints()[1].label, "Pick or drop");
+            expect_drawn(step.capture);
+            picker_seen = true;
+        }
+        hui::InputFrame input = idle();
+        input.pressed = step.press;
+        input.held = step.press;
+        input.nav = step.nav;
+        frame(input);
+    }
+    EXPECT_TRUE(picker_seen);
+    for (int i = 0; i < 60; ++i)
+        frame(idle());
+    // Accepted and closed: the page has the focus again.
+    EXPECT_STRNE(page->hints()[1].label, "Pick or drop");
+}
+
 TEST_F(ComponentsEntry, DrawsInEveryThemeAndVariant)
 {
     PinEntry pin;
@@ -583,6 +807,8 @@ TEST_F(ComponentsEntry, DrawsInEveryThemeAndVariant)
                          {3, "Unset", Action::count, Action::count, false},
                          {4, "Camera", Action::r3, Action::count, true}});
     binder.set_bounds({1000.0f, 520.0f, 420.0f, 200.0f}); // short: it scrolls
+    KeyPicker picker;
+    picker.set_bounds({100.0f, 520.0f, 900.0f, 420.0f});
     InputPrompt prompt;
     prompt.set_title("Name this save");
     prompt.field.set_label("Name");
@@ -648,6 +874,19 @@ TEST_F(ComponentsEntry, DrawsInEveryThemeAndVariant)
             if (kind == HighlightKind::tint)
                 send(binder, press(Action::confirm)); // listening
 
+            picker.style.theme = theme;
+            picker.style.reduced_motion = odd;
+            picker.style.highlight.kind = kind;
+            picker.style.surfaces = !odd;
+            picker.style.panel = kind != HighlightKind::underline;
+            picker.style.done_key = kind != HighlightKind::bar;
+            picker.style.summary_height = kind == HighlightKind::glow ? 0.0f : 56.0f;
+            picker.set_keys(
+                odd ? std::vector<std::string_view>{}
+                    : std::vector<std::string_view>{"ctrl", "shift", "backspace", "up"});
+            picker.focus_key(odd ? "up" : "space");
+            send(picker, press(Action::confirm));
+
             prompt.style.theme = theme;
             prompt.style.reduced_motion = odd;
             prompt.style.buttons = !odd;
@@ -660,6 +899,7 @@ TEST_F(ComponentsEntry, DrawsInEveryThemeAndVariant)
             pin.draw(target);
             search.draw(target);
             binder.draw(target);
+            picker.draw(target);
             prompt.draw(target);
             expect_drawn(theme.id);
         }

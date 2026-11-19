@@ -11,7 +11,7 @@ A reference for building console-grade user interfaces for PS5 homebrew with
 OpenGL 4.6, and one native app ("Homebrew UI Lab") that shows all of it.
 
 <!-- BEGIN:counts -->
-Right now: **21 designs**, **30 themes**, **99 components**.
+Right now: **21 designs**, **30 themes**, **100 components**.
 <!-- END:counts -->
 
 It has four levels. Enter at the highest one that does the job:

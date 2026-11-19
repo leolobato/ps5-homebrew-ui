@@ -38,6 +38,8 @@
 #include "ui/components/inventory_grid.hpp"
 #include "ui/components/jump_bar.hpp"
 #include "ui/components/key_binder.hpp"
+#include "ui/components/key_cap.hpp"
+#include "ui/components/key_picker.hpp"
 #include "ui/components/keyboard.hpp"
 #include "ui/components/layout.hpp"
 #include "ui/components/list.hpp"

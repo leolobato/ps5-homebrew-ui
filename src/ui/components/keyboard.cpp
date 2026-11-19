@@ -5,6 +5,7 @@
 #include "ui/components/keyboard.hpp"
 
 #include "ui/components/action_glyph.hpp"
+#include "ui/components/key_cap.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -50,90 +51,6 @@ KeyboardKey text_key(const char *text, int span = 1)
     key.text = text;
     key.span = span;
     return key;
-}
-
-// Painter::label sets a theme's labels in capitals where the theme asks for
-// them. A key cap must show the case it types, so caps are set in the label
-// face with the same sizing rules and no case change.
-float cap_text(Canvas &canvas, Painter &paint, std::string_view value, float x, float baseline,
-               float size, Color color, gfx::Align align)
-{
-    const Theme &theme = paint.theme();
-    if (theme.label == FontRole::pixel)
-    {
-        if (canvas.fonts.pixel.font == nullptr)
-            return paint.label(value, x, baseline, size, color, align);
-        return text(canvas.list, canvas.fonts.pixel, value, x, baseline - size * 0.04f,
-                    Painter::pixel_em(size * 0.62f), color, align);
-    }
-    const float scale = theme.label == FontRole::hand ? 1.18f : 1.0f;
-    return text(canvas.list, paint.font(theme.label), value, x, baseline, size * scale, color,
-                align);
-}
-
-float cap_width(const Canvas &canvas, const Painter &paint, std::string_view value, float size)
-{
-    const Theme &theme = paint.theme();
-    if (theme.label == FontRole::pixel)
-    {
-        if (canvas.fonts.pixel.font == nullptr)
-            return paint.label_width(value, size);
-        return canvas.fonts.pixel.measure(value, Painter::pixel_em(size * 0.62f));
-    }
-    const float scale = theme.label == FontRole::hand ? 1.18f : 1.0f;
-    return paint.font(theme.label).measure(value, size * scale);
-}
-
-struct KeyPaint
-{
-    Color fill;
-    Color edge;
-    Color ink;
-    float border = -1.0f;
-};
-
-// The recipe of Painter::button: its primary kind for the Done key and its
-// secondary kind for every other, so a key is a button of the theme.
-KeyPaint key_paint(const Theme &theme, bool primary)
-{
-    const bool framed = theme.style == SurfaceStyle::hard || theme.style == SurfaceStyle::pixel ||
-                        theme.style == SurfaceStyle::bevel;
-    const float line = theme.button_border < 0.0f ? theme.border : theme.button_border;
-    if (primary)
-    {
-        // On lit consoles the edge carries the colour, not the fill.
-        if (theme.style == SurfaceStyle::glow)
-            return {theme.surface, theme.primary, theme.primary, -1.0f};
-        const bool sketch = theme.style == SurfaceStyle::sketch;
-        return {theme.primary, framed ? theme.outline : (sketch ? theme.on_primary : theme.primary),
-                theme.on_primary, framed || sketch ? theme.border : line};
-    }
-    const bool hollow = theme.secondary.a <= 0.01f;
-    return {theme.secondary, hollow ? theme.on_secondary : theme.outline, theme.on_secondary,
-            hollow ? std::max(theme.border, 1.5f) : (framed ? theme.border : line)};
-}
-
-// How far Painter::surface moves a surface's content when it is pressed. The
-// caps are drawn in a later pass than the surfaces (the highlight lies
-// between them), so the offset is worked out again here.
-void pressed_offset(const Theme &theme, float press, float *dx, float *dy)
-{
-    *dx = 0.0f;
-    *dy = 0.0f;
-    switch (theme.style)
-    {
-    case SurfaceStyle::hard:
-        *dx = *dy = theme.shadow_offset * press;
-        break;
-    case SurfaceStyle::bevel:
-        *dx = *dy = press > 0.5f ? 2.0f : 0.0f;
-        break;
-    case SurfaceStyle::sketch:
-        *dy = 2.0f * press;
-        break;
-    default:
-        break;
-    }
 }
 
 // The symbols of the wide keys, drawn from strokes so every face has them.
@@ -885,11 +802,11 @@ void Keyboard::draw_cap(Canvas &canvas, Painter &paint, const KeyboardKey &key, 
             if (alpha <= 0.01f || value.empty())
                 return;
             // A key that types a word (".com") sets it as large as fits.
-            const float wide = cap_width(canvas, paint, value, style.label_size);
+            const float wide = key_cap_width(canvas, paint, value, style.label_size);
             const float room = std::max(rect.w - 12.0f, 8.0f);
             const float size = wide > room ? style.label_size * room / wide : style.label_size;
-            cap_text(canvas, paint, value, rect.cx(), rect.cy() + size * 0.35f, size,
-                     ink.with_alpha(alpha), gfx::Align::center);
+            key_cap_text(canvas, paint, value, rect.cx(), rect.cy() + size * 0.35f, size,
+                         ink.with_alpha(alpha), gfx::Align::center);
         };
         if (!key.label.empty())
         {
@@ -1039,7 +956,7 @@ void Keyboard::draw(Canvas &canvas) const
             const float press = push_key(r, k, rect);
             if (style.surfaces)
             {
-                const KeyPaint look = key_paint(theme, key.kind == KeyKind::done);
+                const KeyCapPaint look = key_cap_paint(theme, key.kind == KeyKind::done);
                 paint.surface(rect, radius, look.fill, look.edge, 1.0f - press, look.border);
                 if (key.kind == KeyKind::shift && armed > 0.01f)
                     paint.stroke(rect, radius, std::max(theme.border, 2.5f),
@@ -1098,7 +1015,7 @@ void Keyboard::draw(Canvas &canvas) const
             Rect rect = key_rect(r, k);
             const bool is_done = key.kind == KeyKind::done;
             const Color resting =
-                style.surfaces ? key_paint(theme, is_done).ink : (is_done ? flat_done : flat);
+                style.surfaces ? key_cap_paint(theme, is_done).ink : (is_done ? flat_done : flat);
             const float cover = highlight_.coverage(rect) * active_amount_.value;
             const Color ink = Highlight::text_color(style, look, cover, resting);
             const float press = push_key(r, k, rect);
@@ -1106,7 +1023,7 @@ void Keyboard::draw(Canvas &canvas) const
             {
                 float dx = 0.0f;
                 float dy = 0.0f;
-                pressed_offset(theme, tween::clamp01(press), &dx, &dy);
+                key_cap_offset(theme, tween::clamp01(press), &dx, &dy);
                 rect.x += dx;
                 rect.y += dy;
             }

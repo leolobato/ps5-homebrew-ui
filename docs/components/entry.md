@@ -6,13 +6,15 @@
 
 Components for typing and capturing input with a controller: an on-screen
 keyboard, a code entry, a search box with suggestions, a list that remaps
-buttons, and the overlay that asks for a line of text. They build on
+buttons, a PC keyboard to pick a key combination from, and the overlay that
+asks for a line of text. They build on
 [`ui::TextField`](forms.md): none of them owns a keyboard *and* a text, so any
 of them can be combined with any other.
 
 Headers: `ui/components/keyboard.hpp`, `pin_entry.hpp`, `search_field.hpp`,
-`key_binder.hpp`, `input_prompt.hpp`, and the shared helper
-`action_glyph.hpp`.
+`key_binder.hpp`, `key_picker.hpp`, `input_prompt.hpp`, and the shared
+helpers `action_glyph.hpp` and `key_cap.hpp` (the key caps `Keyboard` and
+`KeyPicker` share).
 
 ## Keyboard
 
@@ -433,6 +435,106 @@ a locked row, a reserved or taken button, nothing to reset), `cancelled`
 Cues: `sounds.move`, `sounds.activate` (listening starts), `sounds.change`
 (a new binding; pitch 0.94 for the reset), `sounds.cancel`, `sounds.refuse`.
 
+## KeyPicker
+
+A PC keyboard for a controller, to pick one key or a combination such as
+Ctrl + S. Cross picks the focused key or drops it again; picked keys stay lit
+in the accent colour and are listed as chips above the grid ("Ctrl + S"),
+with a count ("2 / 4"). Square clears the pick, Triangle or the Done key
+accepts it, Circle cancels. It is for screens that bind controller buttons to
+keyboard input; typing text is the `Keyboard`'s job.
+
+The grid is the main block of a PC keyboard in 15 columns and six rows: Esc,
+F1 to F12, Insert and Delete; the digit row with Backspace; the letters, the
+punctuation keys, Tab, Caps Lock, Enter, Shift; Ctrl, Win, Alt, Space; Home,
+End, Page Up, Page Down and the four arrows. There is no number pad and no
+mouse: a screen that also offers mouse buttons lists them on its own.
+
+```cpp
+ui::KeyPicker picker;
+picker.style.theme = theme;
+picker.set_keys({"ctrl", "s"}); // what is bound now
+picker.set_bounds({300, 280, 1320, picker.preferred_height(1320)});
+picker.on_accept = [&](const std::vector<std::string> &keys) { bind(keys); };
+
+const ui::Event event = picker.handle(input, feedback); // every input while it is open
+if (event == ui::Event::activated || event == ui::Event::cancelled)
+    close();
+picker.update(dt);
+picker.draw(canvas);
+```
+
+### Names, not characters
+
+The picker returns key **names**: lower-case words with no punctuation in them
+(`a`, `7`, `f5`, `ctrl`, `lwin`, `space`, `enter`, `escape`, `capslock`,
+`pageup`, `left`, `semicolon`, `comma`, `equals`, `backquote`, `lbracket`). A
+name can go into a text format that separates with `+`, `,`, `;`, `=` or
+spaces without quoting. `kKeyPickerKeys` is the public table of every key:
+its `name`, its `label` ("PgUp", ";") and its place in the grid. Map the names
+to your own codes from it; `find_picker_key(name)` looks one up.
+
+### Order
+
+At most `style.max_keys` keys (4) are picked; a further one is refused, and
+dropping one makes room. Modifiers always come first, in the order of
+`kKeyPickerModifiers` (`ctrl`, `lctrl`, `rctrl`, `shift`, `lshift`, `rshift`,
+`alt`, `lalt`, `ralt`, `lwin`, `rwin`; `picker_modifier_rank(name)` gives the
+place). The other keys keep the order they were picked in, since that is the
+order a combination presses them. With `max_keys` 1, Cross replaces the pick
+instead of adding to it: a picker for one key.
+
+`set_keys(names)` gives it the current binding, silently: unknown names,
+repeats and names past `max_keys` are dropped, and it returns false if any
+was. Nothing is picked by default.
+
+API: `set_keys`, `keys()`, `picked(name)`, `summary()` ("Ctrl + S"),
+`tap(name, feedback)` (move there and toggle, for tours and tests),
+`clear(feedback)`, `accept(feedback)`, `focus()`, `focused_name()` (empty on
+the Done key), `set_focus(index)`, `focus_key(name)`, `key_count()`,
+`key_rect(index)`, `exit()`, `preferred_height(width)`, `enter()`.
+
+### Style: `KeyPickerStyle`
+
+| Knob | Default | Effect |
+| --- | --- | --- |
+| `gap` | 6 | Between keys |
+| `radius_source` | `theme` | The corners of a key: `theme`, `pill`, `square` or `custom` |
+| `radius` | 8 | With `RadiusSource::custom` |
+| `panel_padding` | 16 | Between the panel and its content |
+| `summary_height` | 56 | The row of picked keys above the grid; 0 hides it |
+| `summary_gap` | 14 | Between that row and the grid |
+| `icon_size` | 20 | The arrows drawn on the arrow keys |
+| `label_size` | 24 | One-character caps |
+| `wide_label_size` | 19 | Word caps; every cap shrinks to fit its key |
+| `summary_size` | 20 | The "+" between chips, the count and `empty_text` |
+| `highlight` | fill | The focus highlight |
+| `surfaces` | true | Every key is a themed surface; false: flat caps |
+| `panel` | true | A themed panel behind everything |
+| `done_key` | true | A Done key at the end of the last row; without it the space bar is wider |
+| `done_label` | "Done" | Its text |
+| `empty_text` | "No key" | The summary while nothing is picked |
+| `max_keys` | 4 | Keys in one pick; 1 makes Cross replace the pick |
+| `allow_empty` | false | Accepting with nothing picked is refused unless this is true |
+| `clear` | `Action::west` | Clears the pick; `Action::count` for none |
+| `accept` | `Action::north` | Accepts, as the Done key does; `Action::count` for none |
+| `wrap` | true | Left and right leave a row through one end and enter by the other |
+| `column_memory` | true | Up and down return to the column the player left |
+| `exits` | none | Edges that hand the focus back; an exit beats the wrap |
+| `press_dip` | 0.06 | A pressed key shrinks by this share |
+| `entrance_step` | 0.03 | Seconds between rows arriving; 0 for none |
+
+Slots: `on_change(keys)` (a key picked or dropped, or a clear),
+`on_accept(keys)`, `on_cancel()`.
+
+Events: `moved`, `changed` (a key picked or dropped, or the pick cleared),
+`activated` (accepted), `cancelled` (back), `refused` (a key past
+`max_keys`, a clear with nothing picked, an empty accept, an edge), `none`.
+
+Cues: `sounds.move` (lower rows a little lower), `sounds.change` (a pick
+climbs in pitch with each key; 0.9 for a drop, 0.85 for a clear),
+`sounds.activate` with a short rumble, `sounds.cancel`, `sounds.refuse`.
+
 ## InputPrompt
 
 The overlay most screens want when they need a line of text: a title, a
@@ -516,12 +618,15 @@ Cues: `sounds.open`, `sounds.close` (cancel), `sounds.activate` (Done),
 
 ### The gallery page
 
-`make_entry_page` puts the five components on one screen.
+`make_entry_page` puts the six components on one screen.
 
 - Left: a `TextField` ("Profile name"), the `Keyboard`, and a `PinEntry`.
 - Middle: a `SearchField` whose provider searches the catalogue's titles, and
   the button that opens the `InputPrompt`.
-- Right: a `KeyBinder` with six actions and the reset row.
+- Right: a `KeyBinder` with six actions and the reset row; below it (Down
+  past the reset row) a button that opens a `KeyPicker` over the page, with a
+  scrim and an opaque panel the page draws. The button shows the shortcut
+  last accepted.
 
 **The focus model.** Three fields want one keyboard, and the keyboard wants
 the D-pad the fields are reached with. The page uses the contract `TextField`
@@ -543,9 +648,9 @@ Square cycles three variants:
 
 | Variant | Knobs |
 | --- | --- |
-| Surface keys, plate | The defaults: keys as surfaces, `fill` highlight, a code spun with the D-pad, `tint` lists, conflicts swap |
-| Numeric pad, masked PIN | `HighlightKind::ring` on the keys; `KeyboardLayout::numeric()` with `key_width` 100 for the code; six `masked` boxes in groups of three, `spin` off; a `pill` search field with a `bar` highlight; a `KeyBinder` in a `panel` with `BindConflict::refuse` |
-| Flat keys, underline | `surfaces` and `panel` off, fixed key size, `underline` highlight; smaller boxes; suggestions without a panel or icons; a `KeyBinder` without dividers; an `InputPrompt` without buttons |
+| Surface keys, plate | The defaults: keys as surfaces, `fill` highlight, a code spun with the D-pad, `tint` lists, conflicts swap, a picker of up to four keys |
+| Numeric pad, masked PIN | `HighlightKind::ring` on the keys; `KeyboardLayout::numeric()` with `key_width` 100 for the code; six `masked` boxes in groups of three, `spin` off; a `pill` search field with a `bar` highlight; a `KeyBinder` in a `panel` with `BindConflict::refuse`; a `KeyPicker` with `max_keys` 1, `ring` highlight and `pill` keys |
+| Flat keys, underline | `surfaces` and `panel` off, fixed key size, `underline` highlight; smaller boxes; suggestions without a panel or icons; a `KeyBinder` without dividers; an `InputPrompt` without buttons; a flat `KeyPicker` with an `underline` highlight and no Done key |
 
 Tour pictures: `entry`, `entry-pin`, `entry-prompt`, `entry-numeric`,
-`entry-flat`.
+`entry-flat`, `entry-keys` (the picker with Ctrl + S picked).
