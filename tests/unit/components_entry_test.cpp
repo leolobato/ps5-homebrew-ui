@@ -669,6 +669,15 @@ TEST_F(ComponentsEntry, KeyPickerClearsAcceptsAndCancels)
     EXPECT_EQ(send(picker, press(Action::confirm)), Event::activated);
     EXPECT_EQ(accepted, 2);
 
+    // Cross on Done with Triangle (or Square) in the same frame accepts once, with the keys as they were.
+    hui::InputFrame both = press(Action::confirm);
+    both.pressed |= action_bit(Action::north) | action_bit(Action::west);
+    both.held = both.pressed;
+    EXPECT_EQ(send(picker, both), Event::activated);
+    EXPECT_EQ(accepted, 3);
+    EXPECT_EQ(taken, (std::vector<std::string>{"space"}));
+    EXPECT_EQ(picker.keys(), (std::vector<std::string>{"space"}));
+
     EXPECT_EQ(send(picker, press(Action::back)), Event::cancelled);
     EXPECT_TRUE(asked(Cue::back));
     EXPECT_EQ(cancelled, 1);

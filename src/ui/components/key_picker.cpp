@@ -496,6 +496,9 @@ Event KeyPicker::handle(const InputFrame &input, Feedback &feedback)
         result = move(input, feedback);
     if (input.is_pressed(Action::confirm))
         result = toggle(focus_, feedback);
+    // Cross on Done accepted the pick: a Square or Triangle in the same frame comes after it, too late.
+    if (result == Event::activated)
+        return result;
     if (style.clear != Action::count && input.is_pressed(style.clear))
         result = clear(feedback);
     if (style.accept != Action::count && input.is_pressed(style.accept))
